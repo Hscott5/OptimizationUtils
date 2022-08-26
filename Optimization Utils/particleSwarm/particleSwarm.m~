@@ -1,0 +1,184 @@
+function history = particleSwarm(varargin)
+
+% Runs Particle Swarm Optimization to test for the best latent vectors that
+% drive a population
+p = inputParser;
+defaultDims = 128;
+nParticles = 64;
+defaultRadius = 15;
+addParameter(p, 'nDims', defaultDims, @isnumeric);
+addParameter(p, 'nParticles', nParticles);
+addParameter(p, 'startRadius', defaultRadius);
+addParameter(p, 'randStart', false);
+addParameter(p, 'fullAdept', false);
+addParameter(p, 'optimizeFor', 'norm');
+addParameter(p, 'criticalVal', 5);
+addParameter(p, 'exploreType', 'adept');
+addParameter(p, 'exploitType', 'hive')
+addOptional(p,'history', struct('oldVelocity', 0));
+p.StructExpand = false;
+parse(p, varargin{:});
+history = p.Results.history;
+nDims = p.Results.nDims;
+optimizeFor = p.Results.optimizeFor;
+startRadius = p.Results.startRadius;
+randStart = p.Results.randStart;
+assert(mod(nDims, nParticles)==0, 'particleSwarm: nParticles must be a factor of nDims');
+
+%% Initialize
+
+
+nMultiples = nDims/nParticles;
+for m = 1:nMultiples
+    beginZeros = repmat(zeros(nParticles), m-1,1);
+    endZeros = repmat(zeros(nParticles), nMultiples-m,1);
+    basisVals{m} = cat(1,beginZeros, eye(nParticles).*startRadius);
+    basisVals{m} = cat(1, basisVals{m}, endZeros);
+end
+
+
+if ~isfield(history, 'stim')
+    if ~randStart
+        history.stim = {cat(1, eye(nParticles), zeros(nParticles,nDims-nParticles)).*startRadius};
+    else
+        history.stim = {normc(randn(nDims,nParticles)).*startRadius};
+    end
+    history.initialize = true;
+    history.fullAdept = p.Results.fullAdept;
+    history.optimizeFor = p.Results
+    return;
+end
+
+
+%% Update Population Best and Personal Best Values
+
+switch optimizeFor
+    case 'norm'
+        norms = sqrt(sum(history.response{end}.^2, 1));
+        sorted = sort(norms);
+        winner = find(norms==sorted(end)); % index of latent with best response this generation
+        % if it's a tie, ignore one (maybe later add in new function to keep more than one globalBest)
+        if size(winner, 2)>1
+            winner = winner(:,1);
+        end
+        % initialize these fields with the only available values
+        if ~isfield(history, 'globalBest')
+            history.globalBest = {history.stim{end}(:,winner); history.response{end}(:,winner)};
+            history.personalBest = {history.stim{end}; history.response{end}};  
+        end
+        % if any new best guesses appear, save them
+        if norm(history.globalBest{2}(:,end)) < norms(winner)
+            history.globalBest{1,:} = cat(2, history.globalBest{1,:}, history.stim{end}(:,winner));
+            history.globalBest{2,:} = cat(2, history.globalBest{2,:}, history.response{end}(:,winner));
+        end
+        % save any changes to the personal best guess
+        personalNorms = sqrt(sum(history.personalBest{2}.^2,1));
+        particleImproveIndx = norms > personalNorms(:,:,end);
+        newPersonalBests = history.personalBest{1}(:,:,end);
+        newPersonalBestResponses = history.personalBest{2}(:,:,end);
+        newPersonalBests(:,particleImproveIndx) = history.stim{end}(:,particleImproveIndx);
+        newPersonalBestResponses(:,particleImproveIndx) = history.response{end}(:,particleImproveIndx);
+        if min(size(newPersonalBests))~=0
+            history.personalBest{1,:} = cat(3, history.personalBest{1,:}, newPersonalBests);
+            history.personalBest{2,:} = cat(3, history.personalBest{2,:}, newPersonalBestResponses);
+        end
+    case 'variance'
+        vars = var(history.response{end});
+        sorted = sort(vars);
+        winner = find(vars==sorted(end)); % index of latent with best response this generation
+        % if it's a tie, ignore one (maybe later add in new function to keep more than one globalBest)
+        if size(winner, 2)>1
+            winner = winner(:,1);
+        end
+         % initialize these fields with the only available values
+        if ~isfield(history, 'globalBest')
+            history.globalBest = {history.stim{end}(:,winner); history.response{end}(:,winner)};
+            history.personalBest = {history.stim{end}; history.response{end}};  
+        end
+        
+        % if any new best guesses appear, save them
+        if var(history.globalBest{2}(:,end)) < vars(winner)
+            history.globalBest{1,:} = cat(2, history.globalBest{1,:}, history.stim{end}(:,winner));
+            history.globalBest{2,:} = cat(2, history.globalBest{2,:}, history.response{end}(:,winner));
+        end
+        personalBestVars = var(history.personalBest{2}); % personal best variances
+        particleImproveIndx = vars > personalBestVars(:,:,end);
+        % preallocate
+        newPersonalBests = history.personalBest{1}(:,:,end); 
+        newPersonalBestResponses = history.personalBest{2}(:,:,end);
+        % replace with new personal bests
+        newPersonalBests(:,particleImproveIndx) = history.stim{end}(:,particleImproveIndx);
+        newPersonalBestResponses(:,particleImproveIndx) = history.response{end}(:,particleImproveIndx);
+        % save history of old personal bests
+        if min(size(newPersonalBests))~=0
+            history.personalBest{1,:} = cat(3, history.personalBest{1,:}, newPersonalBests);
+            history.personalBest{2,:} = cat(3, history.personalBest{2,:}, newPersonalBestResponses);
+        end
+end
+
+
+%% Calculate Next latent for each Particle
+
+
+
+if history.initialize && ~randStart
+    currentStim = size(history.stim,2)+1;
+    if currentStim<=nMultiples
+        history.stim{currentStim} = normc(history.stim{currentStim-1} + basisVals{currentStim}).*startRadius;
+    else
+        history.stim{currentStim} = history.stim{currentStim-1}.*-1;
+        history.initialize=false;
+    end
+elseif randStart && size(history.stim,2)<3
+    if isfield(history, 'gaborSpace')
+        if isfield(history, 'nGabors')
+            nGabors = history.nGabors;
+        else
+            nGabors = 32;
+        end
+        history.stim = [history.stim, {[rand(nParticles,nGabors)*20,rand(nParticles,nGabors)*20,rand(nParticles,nGabors)*2*pi,rand(nParticles,nGabors)]'}];
+    else
+        history.stim = cat(2, history.stim, {normc(randn(nDims,nParticles)).*startRadius}); % random gan latent space
+    end
+elseif size(history.stim,2)<4 && ~all(contains({p.Results.exploreType, p.Results.exploitType}, 'vanilla'))
+    history.stim = cat(2, history.stim, [history.personalBest{1}(:,:,end)]);
+else
+%     [w, c1, c2] =  evolutionaryStateEstimation(history); 
+%     w = 0.9-size(history.stim,2)*0.01; % weight for momentum
+    randComponent1 = rand(1,nParticles);
+    randComponent2 = rand(1,nParticles);
+    w = 0.7;
+    c1 = 3; % weight for explore component
+    c2 = 3; % weight for exploit component
+    if c1<0.5; c1=0.5; end
+    if c2>6; c2 = 6; end
+    if w<0.4; w=0.4; end
+%     if particlesConverged(history, 'criticalVal', 5); c1=6;c2=1; end;
+    switch p.Results.exploreType
+        case 'adept'
+            explorePart = normc(adeptComponent(history, history.fullAdept));
+%             history.lastGradientStep = explorePart;
+%             c1 = 5-size(history.stim,2)*0.05; % weight for explore component
+        case 'vanilla'
+            explorePart = history.personalBest{1}(:,:,end)-history.stim{end};
+        case 'random'
+            newRads = randn(1,nParticles)*3+12;
+            history.stim = cat(2, history.stim, {normc(randn(nDims,nParticles)).*newRads});
+            return
+    end
+    switch p.Results.exploitType
+        case 'vanilla'
+            exploitPart = history.globalBest{1}(:,end)-history.stim{end};
+        case 'hive'
+            exploitPart = normc(hiveComponent(history));
+        case 'none'
+            exploitPart = zeros(nDims, nParticles);
+    end
+    newVelocity = w*history.oldVelocity + c1*randComponent1.*explorePart + c2*randComponent2.*exploitPart;
+    newStim = {history.stim{end} + newVelocity};
+    history.oldVelocity = newVelocity;
+    history.stim = cat(2, history.stim, newStim);
+end
+
+
+    
